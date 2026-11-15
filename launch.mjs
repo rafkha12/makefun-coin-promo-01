@@ -11,6 +11,18 @@
 // default launch is create-only: expected spend ~0.0078 SOL from a balance
 // of 0.032227237 SOL. Add --buy to also buy 0.01 SOL like GHOST did.
 // Writes launch-result.json + the real LAUNCH.json only on a real --send.
+//
+// v2 (2026-11-15): the first --send died at the metadata upload — pump.fun
+// IPFS fetch "terminated", then the catbox fallback fetch threw ECONNRESET
+// UNCAUGHT and crashed the script before any tx was built (0 SOL spent).
+// Fix: every upload step now retries (3 attempts, 2s/4s backoff, 30s timeout,
+// fresh FormData per attempt), there are three routes in order — pump.fun
+// IPFS via Node fetch, catbox via Node fetch, catbox via the curl binary
+// (a different HTTP stack; GHOST's catbox upload succeeded from this shell) —
+// and the whole upload is wrapped so a failure exits cleanly with code 1
+// instead of crashing. 0x0.st is NOT a route: its uploads are disabled.
+// The kit documents no other metadata endpoint. Coin, logo, description,
+// website and wallet are unchanged.
 import { readFileSync, writeFileSync } from 'node:fs';
 import {
   address,
@@ -68,38 +80,111 @@ const u8 = getUtf8Encoder();
 const addrEnc = getAddressEncoder();
 const b58Dec = getBase58Decoder();
 
-// --- metadata upload: pump.fun IPFS first, catbox fallback (GHOST's path) ---
-async function uploadMetadata(imageUrl) {
-  const meta = { name: NAME, symbol: SYMBOL, description: DESCRIPTION, image: imageUrl, website: WEBSITE };
-  const imgBytes = readFileSync(IMAGE);
-  const form = new FormData();
-  form.append('name', NAME);
-  form.append('symbol', SYMBOL);
-  form.append('description', DESCRIPTION);
-  form.append('website', WEBSITE);
-  form.append('file', new File([imgBytes], 'beacon-logo.png', { type: 'image/png' }));
-  try {
-    const r = await fetch('https://pump.fun/api/ipfs', { method: 'POST', body: form });
-    const j = await r.json();
-    if (r.ok && j.metadataUri) return j.metadataUri;
-    console.log('pump.fun IPFS failed, falling back to catbox:', r.status, JSON.stringify(j).slice(0, 200));
-  } catch (e) {
-    console.log('pump.fun IPFS error, falling back to catbox:', e.message);
+import { execFileSync } from 'node:child_process';
+
+// --- retry helper: run fn up to `tries` times, 2s then 4s backoff ---
+async function attempt(label, fn, tries = 3) {
+  let lastErr;
+  for (let i = 1; i <= tries; i++) {
+    try {
+      const out = await fn();
+      if (i > 1) console.log(`${label}: succeeded on attempt ${i}/${tries}`);
+      return out;
+    } catch (e) {
+      lastErr = e;
+      console.log(`${label}: attempt ${i}/${tries} failed: ${String(e.message || e).slice(0, 200)}`);
+      if (i < tries) await sleep(i === 1 ? 2000 : 4000);
+    }
   }
-  const up = new FormData();
-  up.append('reqtype', 'fileupload');
-  up.append('fileToUpload', new File([imgBytes], 'beacon-logo.png', { type: 'image/png' }));
-  const r2 = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: up });
-  const imgUrl = (await r2.text()).trim();
-  if (!r2.ok || !imgUrl.startsWith('https://')) throw new Error(`catbox image upload failed: ${r2.status} ${imgUrl.slice(0, 200)}`);
-  const meta2 = { ...meta, image: imgUrl };
-  const up2 = new FormData();
-  up2.append('reqtype', 'fileupload');
-  up2.append('fileToUpload', new File([JSON.stringify(meta2)], 'beacon-metadata.json', { type: 'application/json' }));
-  const r3 = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: up2 });
-  const metaUrl = (await r3.text()).trim();
-  if (!r3.ok || !metaUrl.startsWith('https://')) throw new Error(`catbox metadata upload failed: ${r3.status} ${metaUrl.slice(0, 200)}`);
-  return metaUrl;
+  throw lastErr;
+}
+
+function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  return fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+// Route 1: pump.fun's own IPFS upload (fresh FormData per attempt).
+async function uploadViaPumpFun(imgBytes) {
+  return attempt('pump.fun IPFS', async () => {
+    const form = new FormData();
+    form.append('name', NAME);
+    form.append('symbol', SYMBOL);
+    form.append('description', DESCRIPTION);
+    form.append('website', WEBSITE);
+    form.append('file', new File([imgBytes], 'beacon-logo.png', { type: 'image/png' }));
+    const r = await fetchWithTimeout('https://pump.fun/api/ipfs', { method: 'POST', body: form });
+    const j = await r.json();
+    if (!r.ok || !j.metadataUri) throw new Error(`HTTP ${r.status}: ${JSON.stringify(j).slice(0, 200)}`);
+    return j.metadataUri;
+  });
+}
+
+// Shared catbox two-step: upload image, then metadata JSON pointing at it.
+async function catboxUploadFile(bytes, filename, mime, uploadFn) {
+  const url = await uploadFn(bytes, filename, mime);
+  if (!url.startsWith('https://')) throw new Error(`bad upload URL: ${String(url).slice(0, 200)}`);
+  return url;
+}
+async function uploadViaCatboxFetch(imgBytes) {
+  const up = async (bytes, filename, mime) => {
+    const form = new FormData();
+    form.append('reqtype', 'fileupload');
+    form.append('fileToUpload', new File([bytes], filename, { type: mime }));
+    const r = await fetchWithTimeout('https://catbox.moe/user/api.php', { method: 'POST', body: form }, 60000);
+    const text = (await r.text()).trim();
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 200)}`);
+    return text;
+  };
+  const imgUrl = await attempt('catbox image (fetch)', () => catboxUploadFile(imgBytes, 'beacon-logo.png', 'image/png', up));
+  const meta = { name: NAME, symbol: SYMBOL, description: DESCRIPTION, image: imgUrl, website: WEBSITE };
+  return attempt('catbox metadata (fetch)', () =>
+    catboxUploadFile(Buffer.from(JSON.stringify(meta)), 'beacon-metadata.json', 'application/json', up));
+}
+
+// Route 3: same catbox host, different HTTP stack — the curl binary.
+// GHOST's catbox upload succeeded from this shell; Node fetch is what reset.
+function curlUpload(bytes, filename, mime) {
+  const out = execFileSync(
+    'curl',
+    ['-sS', '--max-time', '60', '-F', 'reqtype=fileupload', '-F', `fileToUpload=@/dev/stdin;filename=${filename};type=${mime}`, 'https://catbox.moe/user/api.php'],
+    { input: bytes, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' },
+  ).trim();
+  if (!out.startsWith('https://')) throw new Error(`bad upload URL: ${out.slice(0, 200)}`);
+  return out;
+}
+async function uploadViaCatboxCurl(imgBytes) {
+  const imgUrl = await attempt('catbox image (curl)', () => curlUpload(imgBytes, 'beacon-logo.png', 'image/png'), 2);
+  const meta = { name: NAME, symbol: SYMBOL, description: DESCRIPTION, image: imgUrl, website: WEBSITE };
+  return attempt('catbox metadata (curl)', () => curlUpload(Buffer.from(JSON.stringify(meta)), 'beacon-metadata.json', 'application/json'), 2);
+}
+
+// --- metadata upload: three routes in order; clean error if all fail ---
+async function uploadMetadata() {
+  const imgBytes = readFileSync(IMAGE);
+  const errors = [];
+  for (const [label, fn] of [
+    ['pump.fun IPFS', () => uploadViaPumpFun(imgBytes)],
+    ['catbox via fetch', () => uploadViaCatboxFetch(imgBytes)],
+    ['catbox via curl', () => uploadViaCatboxCurl(imgBytes)],
+  ]) {
+    try {
+      const uri = await fn();
+      console.log(`metadata uploaded via ${label}: ${uri}`);
+      // Warning-only read-back: GHOST's catbox read-back flaked once from
+      // this shell even though the upload was good, so never block on it.
+      try {
+        const check = await fetchWithTimeout(uri, {}, 15000);
+        console.log(`metadata read-back: HTTP ${check.status}`);
+      } catch (e) {
+        console.log(`metadata read-back flaky (warning only): ${String(e.message || e).slice(0, 120)}`);
+      }
+      return uri;
+    } catch (e) {
+      console.log(`route ${label} failed: ${String(e.message || e).slice(0, 200)}`);
+      errors.push(`${label}: ${String(e.message || e).slice(0, 200)}`);
+    }
+  }
+  throw new Error(`all metadata upload routes failed — ${errors.join(' | ')}`);
 }
 
 const agent = await createKeyPairSignerFromBytes(
@@ -119,7 +204,15 @@ const mint = await createKeyPairSignerFromBytes(new Uint8Array(mintBytes));
 console.log('mint (fresh):', mint.address);
 if (SEND) writeFileSync(`${REPO}/mint-keypair.json`, JSON.stringify(mintBytes), { mode: 0o600 });
 
-const metadataUri = SEND ? await uploadMetadata('') : 'https://example.invalid/beacon-metadata.json';
+let metadataUri = 'https://example.invalid/beacon-metadata.json';
+if (SEND) {
+  try {
+    metadataUri = await uploadMetadata();
+  } catch (e) {
+    console.error(`METADATA UPLOAD FAILED — nothing built, nothing sent, 0 SOL spent: ${e.message}`);
+    process.exit(1);
+  }
+}
 console.log('metadataUri:', metadataUri);
 if (!SEND) {
   console.log('DRY RUN — metadata NOT uploaded, nothing sent. Metadata JSON that will be uploaded:');
@@ -229,9 +322,18 @@ console.log('pump program in logs:', logs.some((l) => l.includes('6EF8rrecthR5Dk
 const mintSigs = await rpc('getSignaturesForAddress', [mint.address, { limit: 10 }]);
 console.log('mint tx count:', mintSigs.length, 'oldest:', mintSigs[mintSigs.length - 1]?.signature);
 const oldestIsOurs = mintSigs.length > 0 && mintSigs[mintSigs.length - 1].signature === sig;
-const metaRes = await fetch(metadataUri);
-const metaJson = await metaRes.json();
-console.log('metadata reads back:', JSON.stringify(metaJson));
+let metaJson = null;
+try {
+  const metaRes = await fetch(metadataUri);
+  metaJson = await metaRes.json();
+  console.log('metadata reads back:', JSON.stringify(metaJson));
+} catch (e) {
+  // Warning only: the metadata read-back from this shell is flaky
+  // (catbox returned empty replies for GHOST too, yet its coin listed
+  // fine). The upload itself already returned its URL, and the tx is
+  // final — a failed read-back must never crash the script now.
+  console.log(`metadata read-back failed (warning only, upload already succeeded): ${String(e.message || e).slice(0, 160)}`);
+}
 const balAfter = (await rpc('getBalance', [agent.address])).value;
 console.log('balance after:', balAfter / 1e9, 'SOL, spent:', (balBefore - balAfter) / 1e9, 'SOL');
 

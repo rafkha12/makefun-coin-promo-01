@@ -1,7 +1,11 @@
-# MakeFun Beacon ($BEACON) — launch preview
+# MakeFun Beacon ($BEACON) — launch preview + result
 
-**Status: PREP ONLY. NOT LAUNCHED. No transaction sent, no SOL spent.**
-Launch happens only after Arsha's explicit go-ahead.
+**Status: LAUNCHED 2026-11-15 ~14:20 WIB (07:20 UTC), create-only.**
+Mint `7Xd5QCRwBQi1tMqr1EXEWenemk1xAZxYw4D8qzskfJHh`, create signature
+`4h8sQeWFD7HtCrnVgiC1i4pgbVGpasSr1pL947Q3fmR6NPuRnNtTG5pXRmQZyRSQK6vpzxrMJXWKAaV6nofwdCD2`,
+finalized slot 469643572. Spent **0.017792763 SOL** (0.032227237 →
+0.014434474) — the preview's ~0.0078 SOL estimate was wrong; see
+"Actual cost" below. Full verified record in `launch-result.json`.
 
 ## The coin
 
@@ -71,6 +75,17 @@ required.
 - **Option B (like GHOST): create + 0.01 SOL first buy — ~0.0178 SOL.**
   Balance after ≈ 0.0144 SOL. Still funded, no top-up needed.
 - **Either way: NO top-up needed.** Balance 0.0322 SOL covers both.
+
+## Actual cost (correction — read this, the preview above was wrong)
+
+The launch spent **0.017792763 SOL** for create-only — the preview's
+~0.0078 SOL figure was my error: I had decomposed GHOST's 0.017792763
+as "0.01 buy + 0.0078 fees", but GHOST had NO buy (MEMORY.md says so)
+— its create alone cost exactly 0.017792763, and BEACON's create cost
+the identical figure to the lamport. The pump.fun create (mint +
+bonding-curve + metadata rent + fees) is deterministic at 0.017792763
+SOL. Balance after is 0.014434474 SOL, still comfortably above the
+~0.0035 SOL a prize claim would need. No further spend is planned.
 
 ## Launch flow (proven GHOST path, adapted)
 

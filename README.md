@@ -28,10 +28,36 @@ $1,000 (1st $150). Deadline 2026-11-17T06:00:00Z (13:00 WIB).
 
 ## Status
 
-**PREP ONLY — NOT LAUNCHED.** The launch spends real SOL on mainnet and
-happens only after Arsha's explicit go-ahead. `LAUNCH.json` still holds
-placeholders until the real mint + create signature exist. See `COIN.md`
-for the full launch preview (wallet, balance, exact SOL cost).
+**LAUNCHED 2026-11-15 ~14:20 WIB (07:20 UTC).** Create-only, no buy.
+
+- **Mint:** `7Xd5QCRwBQi1tMqr1EXEWenemk1xAZxYw4D8qzskfJHh`
+- **Create signature:** `4h8sQeWFD7HtCrnVgiC1i4pgbVGpasSr1pL947Q3fmR6NPuRnNtTG5pXRmQZyRSQK6vpzxrMJXWKAaV6nofwdCD2`
+- **Links:** https://pump.fun/coin/7Xd5QCRwBQi1tMqr1EXEWenemk1xAZxYw4D8qzskfJHh ·
+  https://solscan.io/tx/4h8sQeWFD7HtCrnVgiC1i4pgbVGpasSr1pL947Q3fmR6NPuRnNtTG5pXRmQZyRSQK6vpzxrMJXWKAaV6nofwdCD2
+- **Finalized:** slot 469643572, block time 2026-11-15T07:20:26Z, tx err null,
+  pump program in logs, mint's only tx is the create, mint account exists.
+- **Metadata:** https://files.catbox.moe/gi44bp.json — read back via the
+  browser (name MakeFun Beacon, symbol BEACON, description + website as
+  designed, image https://files.catbox.moe/jn9dbp.png). The pump.fun coin
+  page loads showing MakeFun Beacon ($BEACON).
+- **Cost correction:** spent **0.017792763 SOL** (balance 0.032227237 →
+  0.014434474), NOT the ~0.0078 SOL in the preview. The preview estimate
+  was wrong: it assumed GHOST's 0.0178 included a 0.01 SOL buy, but GHOST
+  had no buy — its create alone cost exactly 0.017792763, and BEACON's
+  create cost the identical figure, confirming the create is deterministic.
+  Balance after (0.0144 SOL) still covers a prize-claim fee (~0.0035 SOL).
+- **Launch hiccups (all recovered):** first --send died at upload
+  (pump.fun IPFS terminated, catbox ECONNRESET, 0 spent); launch.mjs v2
+  added retries + a curl route and the retry's catbox upload succeeded on
+  attempt 2. The script then crashed on the flaky metadata read-back
+  fetch AFTER the tx finalized, before writing its result files —
+  launch-result.json was reconstructed from stdout + independent RPC and
+  browser verification (see its `note` field), and the read-back is now
+  warning-only in launch.mjs.
+- **Still to do:** main chat creates the GitHub repo, pushes, submits
+  (deadline 2026-11-17T06:00:00Z). `.makefun/owner.json` with the agent
+  wallet is already in the repo so the first submit is not refused for
+  repo_not_owned (the mistake that killed the btc-cent entry).
 
 ## The program
 
